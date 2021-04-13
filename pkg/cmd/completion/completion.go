@@ -1,6 +1,7 @@
 package completion
 
 import (
+	"errors"
 	"log"
 	"os"
 
@@ -9,10 +10,16 @@ import (
 
 func CreateCompletionCommand() *cobra.Command {
 	tmp := &cobra.Command{
-		Use:       "completion",
-		Short:     "Generate shell completions for the chosen shell",
+		Use:       "completion <shell>",
+		Short:     "Generate shell completions for the chosen shell. Supports pwsh, bash, zsh, and fish",
 		Long:      `Generate shell completions for the chosen shell. Supports pwsh, bash, zsh, and fish`,
 		ValidArgs: []string{"bash", "fish", "pwsh", "zsh"},
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) < 1 {
+				return errors.New("requires a shell argument. Supports pwsh, bash, zsh, and fish")
+			}
+			return nil
+		},
 		Run: func(cmd *cobra.Command, args []string) {
 			var err error
 			switch args[0] {
