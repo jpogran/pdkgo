@@ -9,18 +9,19 @@ import (
 )
 
 var (
-	version = "dev"
-	commit  = "none"
+	version = "0.1.1 "
+	commit  = "79740ad713dbd4f1f7ffeca0c822837e2b9b82a0"
 	date    = "unknown"
 )
 
 func main() {
 	var rootCmd = root.CreateRootCommand()
 
-	var verCmd = appver.CreateVersionCommand(version, date, commit)
 	v := appver.Format(version, date, commit)
 	rootCmd.Version = v
 	rootCmd.SetVersionTemplate(v)
+
+	var verCmd = appver.CreateVersionCommand(version, date, commit)
 	rootCmd.AddCommand(verCmd)
 
 	rootCmd.AddCommand(new.CreateNewCommand())

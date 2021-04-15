@@ -20,6 +20,12 @@ const (
 	TemplateConfigFileName = "pct-config.yml"
 )
 
+type PDKInfo struct {
+	Version   string
+	Commit    string
+	BuildDate string
+}
+
 type PuppetContentTemplate struct {
 	Template PuppetContentTemplateInfo `mapstructure:"template"`
 }
@@ -45,7 +51,7 @@ func List(templatePath string, templateName string) ([]PuppetContentTemplateInfo
 	var tmpls []PuppetContentTemplateInfo
 	for _, file := range matches {
 		log.Debug().Msgf("Found: %+v", file)
-		i := readTemplate(file)
+		i := readTemplateConfig(file)
 		tmpls = append(tmpls, i)
 	}
 
@@ -57,10 +63,13 @@ func List(templatePath string, templateName string) ([]PuppetContentTemplateInfo
 	return tmpls, nil
 }
 
-func Deploy(selectedTemplate string, localTemplateCache string, targetOutput string, targetName string) []string {
+func Deploy(selectedTemplate string, localTemplateCache string, targetOutput string, targetName string, pdkInfo PDKInfo) []string {
+
+	log.Trace().Msgf("PDKInfo: %+v", pdkInfo)
+
 	file := filepath.Join(localTemplateCache, selectedTemplate, TemplateConfigFileName)
 	log.Debug().Msgf("Template: %s", file)
-	tmpl := readTemplate(file)
+	tmpl := readTemplateConfig(file)
 	log.Trace().Msgf("Parsed: %+v", tmpl)
 
 	// pdk new foo-foo
@@ -164,7 +173,7 @@ func Deploy(selectedTemplate string, localTemplateCache string, targetOutput str
 				deployed = append(deployed, templateFile.TargetFilePath)
 			}
 		} else {
-			err := createTemplateFile(targetName, file, templateFile, tmpl)
+			err := createTemplateFile(targetName, file, templateFile, tmpl, pdkInfo)
 			if err != nil {
 				log.Error().Msgf("%s", err)
 				continue
@@ -197,14 +206,17 @@ func createTemplateDirectory(targetDir string) error {
 	return nil
 }
 
-func createTemplateFile(targetName string, configFile string, templateFile PuppetContentTemplateFileInfo, tmpl PuppetContentTemplateInfo) error {
+func createTemplateFile(targetName string, configFile string, templateFile PuppetContentTemplateFileInfo, tmpl PuppetContentTemplateInfo, pdkInfo PDKInfo) error {
 	log.Trace().Msgf("Creating: '%s'", templateFile.TargetFilePath)
-	text := processTemplate(
+	config := processConfiguration(
 		targetName,
 		configFile,
 		templateFile.TemplatePath,
 		tmpl,
+		pdkInfo,
 	)
+
+	text := renderFile(templateFile.TemplatePath, config)
 	if text == "" {
 		return fmt.Errorf("Failed to create %s", templateFile.TargetFilePath)
 	}
@@ -229,12 +241,16 @@ func createTemplateFile(targetName string, configFile string, templateFile Puppe
 		return err
 	}
 
-	_ = file.Sync()
+	err = file.Sync()
+	if err != nil {
+		log.Error().Msgf("Error: %v", err)
+		return err
+	}
 
 	return nil
 }
 
-func readTemplate(configFile string) PuppetContentTemplateInfo {
+func readTemplateConfig(configFile string) PuppetContentTemplateInfo {
 	v := viper.New()
 	userConfigFileBase := filepath.Base(configFile)
 	v.AddConfigPath(filepath.Dir(configFile))
@@ -251,8 +267,24 @@ func readTemplate(configFile string) PuppetContentTemplateInfo {
 	return config.Template
 }
 
-func processTemplate(projectName string, configFile string, projectTemplate string, tmpl PuppetContentTemplateInfo) string {
+func processConfiguration(projectName string, configFile string, projectTemplate string, tmpl PuppetContentTemplateInfo, pdkInfo PDKInfo) map[string]interface{} {
 	v := viper.New()
+
+	log.Trace().Msgf("PDKInfo: %+v", pdkInfo)
+	/*
+		Inheritance (each level overwritten by next):
+			convention based variables
+				- pdk specific variables based on transformed user input
+			machine variables
+				- information that comes from the current machine
+				- user name, hostname, etc
+			template variables
+				- information from the template itself
+				- designed to be runnable defaults for everything inside template
+			user overrides
+				- ~/.pdk/pdk.yml
+				- user customizations for their preferences
+	*/
 
 	// Convention based variables
 	switch tmpl.Type {
@@ -261,19 +293,20 @@ func processTemplate(projectName string, configFile string, projectTemplate stri
 	case "item":
 		v.SetDefault("item_name", projectName)
 	}
-
-	// Environment based variabls
 	user := getCurrentUser()
+	v.SetDefault("user", user)
 	v.SetDefault("puppet_module.author", user)
 
+	// Machine based variables
 	cwd, _ := os.Getwd()
-	v.SetDefault("cwd", cwd)
 	hostName, _ := os.Hostname()
+	v.SetDefault("cwd", cwd)
 	v.SetDefault("hostname", hostName)
 
 	// PDK binary specific variables
-	v.SetDefault("prototype.version", "0.1.1")
-	v.SetDefault("prototype.commit_hash", "abc45f")
+	v.SetDefault("pdk.version", pdkInfo.Version)
+	v.SetDefault("pdk.commit_hash", pdkInfo.Commit)
+	v.SetDefault("pdk.build_date", pdkInfo.BuildDate)
 
 	// Template specific variables
 	log.Trace().Msgf("Adding %v", filepath.Dir(configFile))
@@ -288,12 +321,11 @@ func processTemplate(projectName string, configFile string, projectTemplate stri
 
 	// User specified variable overrides
 	home, _ := homedir.Dir()
-	log.Trace().Msgf("Adding %v", filepath.Join(home, ".pdk"))
+	userConfigPath := filepath.Join(home, ".pdk")
+	log.Trace().Msgf("Adding %v", userConfigPath)
 	v.SetConfigName("pdk")
 	v.SetConfigType("yml")
-	v.AddConfigPath(filepath.Join(home, ".pdk"))
-
-	// Merge all sources together
+	v.AddConfigPath(userConfigPath)
 	if err := v.MergeInConfig(); err == nil {
 		log.Trace().Msgf("Merging config file: %v", v.ConfigFileUsed())
 	} else {
@@ -304,13 +336,13 @@ func processTemplate(projectName string, configFile string, projectTemplate stri
 	err := v.Unmarshal(&config)
 	if err != nil {
 		log.Error().Msgf("unable to decode into struct, %v", err)
+		return nil
 	}
 
-	result := processFile(projectTemplate, config)
-	return result
+	return config
 }
 
-func processFile(fileName string, vars interface{}) string {
+func renderFile(fileName string, vars interface{}) string {
 	tmpl, err := template.
 		New(filepath.Base(fileName)).
 		Funcs(
