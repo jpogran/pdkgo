@@ -1,6 +1,7 @@
 package root
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
 
@@ -81,6 +83,22 @@ func find(s []string, str string) []string {
 		matches = append(matches, str)
 	}
 	return matches
+}
+
+func GetListOfFlags(cmd *cobra.Command, argsV []string, flagsToIgnore []string) []string {
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		if !contains(flagsToIgnore, f.Name) {
+			if f.Changed {
+				switch f.Value.Type() {
+				case "bool":
+					argsV = append(argsV, fmt.Sprintf("--%v", f.Name))
+				case "string":
+					argsV = append(argsV, fmt.Sprintf("--%v %v", f.Name, f.Value))
+				}
+			}
+		}
+	})
+	return argsV
 }
 
 // contains checks if a string is present in a slice
